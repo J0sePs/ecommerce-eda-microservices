@@ -1,0 +1,333 @@
+version: '3.9'
+
+networks:
+  eda-net:
+    driver: bridge
+
+volumes:
+  postgres_orders_data:
+  postgres_users_data:
+  postgres_products_data:
+  postgres_payments_data:
+  postgres_inventory_data:
+  postgres_notifications_data:
+  postgres_analytics_data:
+  redis_data:
+  minio_data:
+
+services:
+  # ─── KAFKA ───────────────────────────────────────────
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    networks:
+      - eda-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9122:9092" # 9092 + 30
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9122
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_NUM_PARTITIONS: 3
+    networks:
+      - eda-net
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "8110:8080" # 8080 + 30
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    networks:
+      - eda-net
+
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    depends_on:
+      - kafka
+    entrypoint: ['/bin/sh', '-c']
+    command: |
+      kafka-topics --create --bootstrap-server kafka:29092 --topic order.order.created     --partitions 3 --replication-factor 1
+      kafka-topics --create --bootstrap-server kafka:29092 --topic order.order.cancelled   --partitions 3 --replication-factor 1
+      kafka-topics --create --bootstrap-server kafka:29092 --topic order.order.confirmed   --partitions 3 --replication-factor 1
+      kafka-topics --create --bootstrap-server kafka:29092 --topic order.order.shipped     --partitions 3 --replication-factor 1
+      kafka-topics --create --bootstrap-server kafka:29092 --topic payment.payment.completed --partitions 3 --replication-factor 1
+      kafka-topics --create --bootstrap-server kafka:29092 --topic payment.payment.failed  --partitions 3 --replication-factor 1
+      kafka-topics --create --bootstrap-server kafka:29092 --topic inventory.stock.reserved --partitions 3 --replication-factor 1
+      kafka-topics --create --bootstrap-server kafka:29092 --topic inventory.stock.depleted --partitions 3 --replication-factor 1
+      kafka-topics --create --bootstrap-server kafka:29092 --topic user.user.registered    --partitions 1 --replication-factor 1
+      kafka-topics --create --bootstrap-server kafka:29092 --topic user.user.verified      --partitions 1 --replication-factor 1
+      # Dead Letter Queues
+      kafka-topics --create --bootstrap-server kafka:29092 --topic order.order.created.dlq --partitions 1 --replication-factor 1
+    networks:
+      - eda-net
+
+  # ─── BASES DE DATOS ─────────────────────────────────
+  postgres-orders:
+    image: postgres:16-alpine
+    ports:
+      - "5463:5432" # 5433 + 30
+    environment:
+      POSTGRES_DB: orders_db
+      POSTGRES_USER: orders_user
+      POSTGRES_PASSWORD: orders_pass
+    volumes:
+      - postgres_orders_data:/var/lib/postgresql/data
+    networks:
+      - eda-net
+
+  postgres-users:
+    image: postgres:16-alpine
+    ports:
+      - "5464:5432" # 5434 + 30
+    environment:
+      POSTGRES_DB: users_db
+      POSTGRES_USER: users_user
+      POSTGRES_PASSWORD: users_pass
+    volumes:
+      - postgres_users_data:/var/lib/postgresql/data
+    networks:
+      - eda-net
+
+  postgres-products:
+    image: postgres:16-alpine
+    ports:
+      - "5465:5432" # 5435 + 30
+    environment:
+      POSTGRES_DB: products_db
+      POSTGRES_USER: products_user
+      POSTGRES_PASSWORD: products_pass
+    volumes:
+      - postgres_products_data:/var/lib/postgresql/data
+    networks:
+      - eda-net
+
+  postgres-payments:
+    image: postgres:16-alpine
+    ports:
+      - "5466:5432" # 5436 + 30
+    environment:
+      POSTGRES_DB: payments_db
+      POSTGRES_USER: payments_user
+      POSTGRES_PASSWORD: payments_pass
+    volumes:
+      - postgres_payments_data:/var/lib/postgresql/data
+    networks:
+      - eda-net
+
+  postgres-inventory:
+    image: postgres:16-alpine
+    ports:
+      - "5467:5432" # 5437 + 30
+    environment:
+      POSTGRES_DB: inventory_db
+      POSTGRES_USER: inventory_user
+      POSTGRES_PASSWORD: inventory_pass
+    volumes:
+      - postgres_inventory_data:/var/lib/postgresql/data
+    networks:
+      - eda-net
+  
+  postgres-notifications:
+    image: postgres:16-alpine
+    ports:
+      - "5468:5432" # 5438 + 30
+    environment:
+      POSTGRES_DB: notifications_db
+      POSTGRES_USER: notifications_user
+      POSTGRES_PASSWORD: notifications_pass
+    volumes:
+      - postgres_notifications_data:/var/lib/postgresql/data
+    networks:
+      - eda-net
+
+  postgres-analytics:
+    image: timescale/timescaledb:latest-pg16
+    ports:
+      - "5469:5432" # 5439 + 30
+    environment:
+      POSTGRES_DB: analytics_db
+      POSTGRES_USER: analytics_user
+      POSTGRES_PASSWORD: analytics_pass
+    volumes:
+      - postgres_analytics_data:/var/lib/postgresql/data
+    networks:
+      - eda-net
+
+  # ─── REDIS ───────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6409:6379" # 6379 + 30
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - eda-net
+
+  # ─── MINIO ───────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9030:9000" # 9000 + 30
+      - "9031:9001" # 9001 + 30
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - eda-net
+
+  # ─── MAILHOG ───────────────────────────────────────────
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "1055:1025" # 1025 + 30
+      - "8055:8025" # 8025 + 30
+    networks:
+      - eda-net
+
+  # ─── SERVICIOS FASTAPI ───────────────────────────────
+  orders-service:
+    build: 
+      context: ./services/orders
+      dockerfile: Dockerfile
+    volumes:
+      - ./services/orders:/app
+      - ./shared:/app/shared
+    ports:
+      - "8031:8000" # 8001 + 30
+    depends_on:
+      - kafka
+      - postgres-orders
+      - redis
+    environment:
+      DATABASE_URL: postgresql+asyncpg://orders_user:orders_pass@postgres-orders:5432/orders_db
+      KAFKA_URL: kafka:29092
+      REDIS_URL: redis://redis:6379/0
+      # SECRET_KEY: ${SECRET_KEY}
+    networks:
+      - eda-net
+
+  users-service:
+    build: 
+      context: ./services/users
+      dockerfile: Dockerfile
+    ports:
+      - "8032:8000" # 8002 + 30
+    depends_on:
+      - kafka
+      - postgres-users
+      - redis
+    environment:
+      DATABASE_URL: postgresql+asyncpg://users_user:users_pass@postgres-users:5432/users_db
+      KAFKA_URL: kafka:29092
+      REDIS_URL: redis://redis:6379/1
+    networks:
+      - eda-net
+    volumes:
+      - ./services/users:/app
+
+  products-service:
+    build: 
+      context: ./services/products
+      dockerfile: Dockerfile
+    ports:
+      - "8033:8000" # 8003 + 30
+    depends_on:
+      - kafka
+      - postgres-products
+      - minio
+    environment:
+      DATABASE_URL: postgresql+asyncpg://products_user:products_pass@postgres-products:5432/products_db
+      KAFKA_URL: kafka:29092
+      MINIO_URL: http://minio:9000
+    networks:
+      - eda-net
+    volumes:
+      - ./services/products:/app
+
+  payments-service:
+    build: 
+      context: ./services/payments
+      dockerfile: Dockerfile
+    ports:
+      - "8034:8000" # 8004 + 30
+    depends_on:
+      - kafka
+      - postgres-payments
+    environment:
+      DATABASE_URL: postgresql+asyncpg://payments_user:payments_pass@postgres-payments:5432/payments_db
+      KAFKA_URL: kafka:29092
+    networks:
+      - eda-net
+    volumes:
+      - ./services/payments:/app
+
+  inventory-service:
+    build: 
+      context: ./services/inventory
+      dockerfile: Dockerfile
+    ports:
+      - "8035:8000" # 8005 + 30
+    depends_on:
+      - kafka
+      - postgres-inventory
+      - redis
+    environment:
+      DATABASE_URL: postgresql+asyncpg://inventory_user:inventory_pass@postgres-inventory:5432/inventory_db
+      KAFKA_URL: kafka:29092
+      REDIS_URL: redis://redis:6379/2
+    networks:
+      - eda-net
+    volumes:
+      - ./services/inventory:/app
+
+  notifications-service:
+    build: 
+      context: ./services/notifications
+      dockerfile: Dockerfile
+    ports:
+      - "8036:8000" # 8006 + 30
+    depends_on:
+      - kafka
+      - postgres-notifications
+      - mailhog
+    environment:
+      DATABASE_URL: postgresql+asyncpg://notifications_user:notifications_pass@postgres-notifications:5432/notifications_db
+      KAFKA_URL: kafka:29092
+      SMTP_HOST: mailhog
+      SMTP_PORT: 1025
+    networks:
+      - eda-net
+    volumes:
+      - ./services/notifications:/app
+
+  analytics-service:
+    build: 
+      context: ./services/analytics
+      dockerfile: Dockerfile
+    ports:
+      - "8037:8000" # 8007 + 30
+    depends_on:
+      - kafka
+      - postgres-analytics
+    environment:
+      DATABASE_URL: postgresql+asyncpg://analytics_user:analytics_pass@postgres-analytics:5432/analytics_db
+      KAFKA_URL: kafka:29092
+    networks:
+      - eda-net
+    volumes:
+      - ./services/analytics:/app
